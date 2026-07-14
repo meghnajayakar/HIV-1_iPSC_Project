@@ -13,7 +13,6 @@ Whole-genome sequencing (WGS) variant calling, filtering, and prioritization pip
   - [Regulatory track](#regulatory-track)
 - [Summary of Workflow](#summary-of-workflow)
 - [Requirements](#requirements)
-- [Summary of Execution Order](#summary-of-execution-order)
 
 ---
 
