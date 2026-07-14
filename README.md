@@ -11,8 +11,8 @@ Whole-genome sequencing (WGS) variant calling, filtering, and prioritization pip
 - [Stage 3: Running `VariantPrioritization_JupyterScripts`](#stage-3-running-variantprioritization_jupyterscripts)
   - [Coding track](#coding-track)
   - [Regulatory track](#regulatory-track)
-- [Summary of Workflow](#summary-of-workflow)
 - [Requirements](#requirements)
+- [Summary of Execution Order](#summary-of-execution-order)
 
 ---
 
