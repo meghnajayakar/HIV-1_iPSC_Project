@@ -4,20 +4,20 @@ Whole-genome sequencing (WGS) variant calling, filtering, and prioritization pip
 
 ## Table of Contents
 
-- [1. Set Up the Working Directory Structure](#1-set-up-the-working-directory-structure)
-- [2. Repository Structure](#2-repository-structure)
-- [3. Pipeline Execution Order](#3-pipeline-execution-order)
-- [4. Stage 2: Running `VariantFiltering_R_Scripts`](#4-stage-2-running-variantfiltering_r_scripts)
-- [5. Stage 3: Running `VariantPrioritization_JupyterScripts`](#5-stage-3-running-variantprioritization_jupyterscripts)
+- [Set Up the Working Directory Structure](#set-up-the-working-directory-structure)
+- [Repository Structure](#repository-structure)
+- [Pipeline Execution Order](#pipeline-execution-order)
+- [Stage 2: Running `VariantFiltering_R_Scripts`](#stage-2-running-variantfiltering_r_scripts)
+- [Stage 3: Running `VariantPrioritization_JupyterScripts`](#stage-3-running-variantprioritization_jupyterscripts)
   - [Coding track](#coding-track)
   - [Regulatory track](#regulatory-track)
-- [6. Summary of Workflow](#6-summary-of-workflow)
-- [7. Requirements](#7-requirements)
+- [Summary of Workflow](#summary-of-workflow)
+- [Requirements](#requirements)
 - [Summary of Execution Order](#summary-of-execution-order)
 
 ---
 
-## 1. Set Up the Working Directory Structure
+## Set Up the Working Directory Structure
 
 Before running any scripts, create the project directory structure on the HPC. This keeps reference files, per-sample data, joint-called VCFs, annotations, scripts, logs, and software all organized under a single project root.
 
@@ -78,7 +78,7 @@ tree "${PROJECT_ROOT}"   # optional: visualize the resulting structure
 
 ---
 
-## 2. Repository Structure
+## Repository Structure
 
 This repository contains the analysis scripts, organized into three stages that must be run **sequentially**, plus a top-level README.
 
@@ -112,7 +112,7 @@ This repository contains the analysis scripts, organized into three stages that 
 
 ---
 
-## 3. Pipeline Execution Order
+## Pipeline Execution Order
 
 Scripts must be run **sequentially**, in the order listed below. Each step depends on the output of the previous one(s).
 
@@ -149,7 +149,7 @@ Logs for each job should be written to `scripts/logs/`.
 
 ---
 
-## 4. Stage 2: Running `VariantFiltering_R_Scripts`
+## Stage 2: Running `VariantFiltering_R_Scripts`
 
 Once steps **7.1** and **7.2** have completed, their results are fed into three Quarto (`.qmd`) notebooks, also run **in order**, for conversion and initial coding/regulatory variant prioritization:
 
@@ -170,7 +170,7 @@ quarto render 2RegulatoryVariantPrioritization.qmd
 
 ---
 
-## 5. Stage 3: Running `VariantPrioritization_JupyterScripts`
+## Stage 3: Running `VariantPrioritization_JupyterScripts`
 
 The notebooks in this folder pick up from the outputs of Stage 2 and are split into two independent tracks: **Coding** and **Regulatory**. Run only the notebooks belonging to the track relevant to your analysis (or both, if you need both sets of results). Within a track, notebooks must be run **in numerical order**.
 
@@ -212,7 +212,7 @@ jupyter nbconvert --to notebook --execute 3.2AlphaGenome.ipynb
 
 ---
 
-## 6. Summary of Workflow
+## Summary of Workflow
 
 ```
 CRAM_selected/ ──▶ 1persample_gvcfs.sh ──▶ gvcf/
@@ -263,7 +263,7 @@ CRAM_selected/ ──▶ 1persample_gvcfs.sh ──▶ gvcf/
 
 ---
 
-## 7. Requirements
+## Requirements
 
 - HPC cluster with a job scheduler (e.g., SLURM/PBS)
 - Singularity/Apptainer (for VEP annotation image in `software/`)
