@@ -1,4 +1,4 @@
-# WGS_variantCalling_MBJ
+# WGS Variant Calling
 
 Whole-genome sequencing (WGS) variant calling, filtering, and prioritization pipeline for the extreme cell line panel. This repository contains the HPC shell scripts, R notebooks, and Jupyter notebooks used to go from raw CRAM files to a prioritized list of coding and regulatory candidate variants.
 
@@ -7,6 +7,8 @@ Whole-genome sequencing (WGS) variant calling, filtering, and prioritization pip
 ## 1. Set Up the Working Directory Structure
 
 Before running any scripts, create the project directory structure on the HPC. This keeps reference files, per-sample data, joint-called VCFs, annotations, scripts, logs, and software all organized under a single project root.
+
+(Please follow exact directory naming as described below or modify naming consistently in each script under `HPC_WGS_Scripts`)
 
 ### Directory structure
 
