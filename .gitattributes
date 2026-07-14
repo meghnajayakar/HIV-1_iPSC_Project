@@ -1,6 +1,0 @@
-*.ipynb linguist-detectable=true
-*.R linguist-detectable=true
-*.py linguist-detectable=true
-
-app/* linguist-documentation=false
-app/* linguist-vendored
