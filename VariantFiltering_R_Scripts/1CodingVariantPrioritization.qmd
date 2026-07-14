@@ -1,0 +1,316 @@
+---
+title: "1CodingVariantPrioritization"
+format: html
+---
+
+This analysis prioritizes rare coding variants in high- and low-infectivity samples by integrating variant annotation, cCRE overlap (where applicable), and differential gene expression results. Genes containing filtered variants and showing significant expression changes are subjected to GO, KEGG and Reactome enrichment analyses to identify biological pathways associated with each infectivity class. This provides functional pathway context for genes containing prioritized variants and enables downstream identification of variants occurring in biologically relevant pathways.
+
+### loading libraries required
+```{r}
+library(dplyr)
+library(tidyverse)
+library(data.table)
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(ReactomePA)
+```
+
+### read high-infectivity and low-infectivity coding samples CSVs (converted from VCF)
+```{r}
+high_samples_df <- read.csv("./high_rare_coding_biotype.csv", sep = ",", header = TRUE)
+high_samples_df
+```
+
+```{r}
+low_samples_df <- read.csv("./low_rare_coding_biotype.csv", sep = ",", header = TRUE)
+low_samples_df
+```
+
+### read cCRE BED annotation for potential overlap of coding and candidate regulatory elements 
+```{r}
+ccre_bed <- read_tsv("./GRCh38-cCREs.bed", col_names = c("chrom", "start", "end", "CCRE_ID", "CCRE_ID_ENCODE", "cCRE_Type"))
+ccre_bed
+```
+
+### rename dataframes to be consistent (these were cross-checked with the dataframes to ensure the correct column was renamed in both high_samples and low_samples)
+```{r}
+high_samples_data <- high_samples_df %>% rename_at('cCRE', ~'CCRE_ID')
+low_samples_data <- low_samples_df %>% rename_at('cCRE', ~'CCRE_ID')
+```
+
+### left join high- and low-infectivity samples with cCRE BED annotations, to provide functional context of potential regulatory element overlap in our coding variant set
+```{r}
+high_ccre <- high_samples_data %>%
+  left_join(ccre_bed %>% select(CCRE_ID, cCRE_Type, CCRE_ID_ENCODE), by = "CCRE_ID")
+
+high_ccre
+```
+
+```{r}
+low_ccre <- low_samples_data %>%
+  left_join(ccre_bed %>% select(CCRE_ID, cCRE_Type, CCRE_ID_ENCODE), by = "CCRE_ID")
+
+low_ccre
+```
+
+### save unique high and low variants with cCRE annotations 
+```{r}
+high_samples <- distinct(high_ccre)
+low_samples <- distinct(low_ccre)
+```
+
+### read DESeq2 results across all cell lines, with a design formula considering screen_nb and replication classification
+```{r}
+de_genes <- read.csv("./DifferentialExpressionResults.csv", sep = ",", header = TRUE)
+de_genes
+```
+
+### rename columns to reflect gene symbol as adding back gene symbol to DESeq2 matrices make the SYMBOL column the index 
+```{r}
+#colnames(de_genes) <- c("SYMBOL", "baseMean", "log2FoldChange", "lfcSE", "pvalue", "padj")
+
+# confirm -> if the DESeq2 result renames column at index 1 with X for the gene names/symbol variable, this will specifically correct X to SYMBOL for downstream analysis
+if("X" %in% colnames(de_genes)) {
+  de_genes <- de_genes %>% rename(SYMBOL = X)
+}
+```
+
+### filter for significant genes, padj < 0.05
+```{r}
+sig_genes <- de_genes %>% 
+  filter(padj < 0.05)
+```
+
+### filter by biotype (protein coding, protein coding LoF, IG V gene, TR V gene and nonsense-mediated decay), impact (high or moderate) for each infectivity class. additionally filter for rare coding variants with a gnomAD exome allele frequency < 0.1% or NA
+
+a stricter threshold (gnomADe < 0.1%) is applied to the coding variants to filter for stronger and potentially pathogenic variant set
+```{r}
+biotype_filter <- c("protein_coding", "protein_coding_LoF", 
+                    "IG_V_gene", "TR_V_gene", "nonsense_mediated_decay")
+
+impact_filter <- c("HIGH", "MODERATE")
+
+high_filtered <- high_samples %>% 
+  filter(IMPACT %in% impact_filter, 
+         (gnomADe_AF < 0.001 | is.na(gnomADe_AF)), 
+         BIOTYPE %in% biotype_filter)
+
+low_filtered <- low_samples %>% 
+  filter(IMPACT %in% impact_filter,
+         (gnomADe_AF < 0.001 | is.na(gnomADe_AF)),
+         BIOTYPE %in% biotype_filter)
+```
+
+```{r}
+high_filtered
+```
+
+```{r}
+low_filtered
+```
+
+### check how many unique genes remain in each infectivity class for enrichment analysis (that is done on unique genes)
+```{r}
+high_filtered_unique_genes <- unique(high_filtered$SYMBOL)
+low_filtered_unique_genes <- unique(low_filtered$SYMBOL)
+```
+
+### retrieve differential expression results for genes retained after variant filtering 
+```{r}
+high_genes_expressed <- sig_genes %>%
+  filter(SYMBOL %in% high_filtered_unique_genes)
+
+high_genes_expressed
+```
+
+```{r}
+low_genes_expressed <- sig_genes %>%
+  filter(SYMBOL %in% low_filtered_unique_genes)
+
+low_genes_expressed
+```   
+
+### left join transcriptionally significant unique genes with genomic data using the gene symbol for both infectivity classes, this provides expression context to variant data 
+```{r}
+high_expressed_df <- left_join(high_genes_expressed, high_filtered, by = "SYMBOL")
+high_expressed_df
+```
+
+```{r}
+low_expressed_df <- left_join(low_genes_expressed, low_filtered, by = "SYMBOL")
+low_expressed_df
+```
+
+### define the enrichment background as all genes tested in the differential expression analysis
+```{r}
+gene_universe <- unique(de_genes$SYMBOL)
+length(gene_universe)
+```
+
+# enrichment analysis 
+
+### define ENTREZ IDs for unique infectivity genes and universe set using gene symbol 
+```{r}
+high_entrez <- bitr(unique(high_expressed_df$SYMBOL), 
+                    fromType = "SYMBOL", 
+                    toType   = "ENTREZID", 
+                    OrgDb    = org.Hs.eg.db)
+
+low_entrez <- bitr(unique(low_expressed_df$SYMBOL), 
+                   fromType = "SYMBOL", 
+                   toType   = "ENTREZID", 
+                   OrgDb    = org.Hs.eg.db)
+
+universe_entrez <- bitr(gene_universe, 
+                        fromType = "SYMBOL", 
+                        toType   = "ENTREZID", 
+                        OrgDb    = org.Hs.eg.db)
+```
+
+
+### gene ontology enrichment with all ontologies - biological processes, cellular components and molecular function, with significant pathways and FDR
+```{r}
+go_high_prioritized <- enrichGO(gene = high_entrez$ENTREZID,
+                    universe      = universe_entrez$ENTREZID,
+                    OrgDb         = org.Hs.eg.db,
+                    keyType       = 'ENTREZID',
+                    ont           = "ALL", # all 
+                    pAdjustMethod = "BH",
+                    pvalueCutoff  = 0.05,
+                    qvalueCutoff  = 0.05,
+                    readable = TRUE)
+
+go_high_prioritized
+```
+
+#### visualize the significant pathways with a dotplot 
+```{r}
+dotplot(go_high_prioritized, showCategory = 10)
+```
+
+#### save go pathway enrichment results as a dataframe 
+```{r}
+df_go_high <- as.data.frame(go_high_prioritized)
+df_go_high
+```
+
+```{r}
+go_low_prioritized <- enrichGO(gene = low_entrez$ENTREZID,
+                    universe      = universe_entrez$ENTREZID,
+                    OrgDb         = org.Hs.eg.db,
+                    keyType       = 'ENTREZID',
+                    ont           = "ALL", # all 
+                    pAdjustMethod = "BH",
+                    pvalueCutoff  = 0.05,
+                    qvalueCutoff  = 0.05,
+                    readable = TRUE)
+
+go_low_prioritized
+```
+
+```{r}
+dotplot(go_low_prioritized, showCategory = 10)
+```
+
+```{r}
+df_go_low <- as.data.frame(go_low_prioritized)
+df_go_low
+```
+
+### KEGG pathway enrichment analysis for the opposing phenotype classes 
+```{r}
+ekegg_high <- enrichKEGG(
+  gene          = high_entrez$ENTREZID,
+  universe      = universe_entrez$ENTREZID,
+  organism      = 'hsa',              # 'hsa' is the code for Homo sapiens
+  keyType       = 'kegg',             # Default is 'kegg' (Entrez IDs)
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# Optional: Convert IDs back to readable Gene Symbols
+ekegg_high <- setReadable(ekegg_high, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+ekegg_high
+```
+
+```{r}
+df_kegg_high <- as.data.frame(ekegg_high)
+df_kegg_high
+```
+
+
+```{r}
+ekegg_low <- enrichKEGG(
+  gene          = low_entrez$ENTREZID,
+  universe      = universe_entrez$ENTREZID,
+  organism      = 'hsa',              # 'hsa' is the code for Homo sapiens
+  keyType       = 'kegg',             # Default is 'kegg' (Entrez IDs)
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# Optional: Convert IDs back to readable Gene Symbols
+ekegg_low <- setReadable(ekegg_low, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+ekegg_low
+
+```
+
+```{r}
+df_kegg_low <- as.data.frame(ekegg_low)
+df_kegg_low
+```
+
+
+### Reactome pathway analysis for opposing infectivity phenotypes 
+```{r}
+reactome_res_high <- enrichPathway(gene = high_entrez$ENTREZID, 
+                              organism = "human", 
+                              pvalueCutoff = 0.05, 
+                              readable = TRUE)
+reactome_res_high
+```
+
+```{r}
+dotplot(reactome_res_high)
+```
+
+```{r}
+df_reactome_high <- as.data.frame(reactome_res_high)
+df_reactome_high
+```
+
+
+```{r}
+reactome_res_low <- enrichPathway(gene = low_entrez$ENTREZID, 
+                              organism = "human", 
+                              pvalueCutoff = 0.05, 
+                              readable = TRUE)
+reactome_res_low
+```
+
+```{r}
+dotplot(reactome_res_low)
+```
+
+```{r}
+df_reactome_low <- as.data.frame(reactome_res_low)
+df_reactome_low
+```
+
+#### save enrichment dataframes to CSV files for downstream analysis 
+```{r}
+fwrite(df_go_high, "./EnrichmentResults/Coding Variants Results/Coding_HighVariants_GO.csv")
+fwrite(df_go_low, "./EnrichmentResults/Coding Variants Results/Coding_LowVariants_GO.csv")
+fwrite(df_kegg_high, "./EnrichmentResults/Coding Variants Results/Coding_HighVariants_KEGG.csv")
+fwrite(df_kegg_low, "./EnrichmentResults/Coding Variants Results/Coding_LowVariants_KEGG.csv")
+fwrite(df_reactome_high, "./EnrichmentResults/Coding Variants Results/Coding_HighVariants_Reactome.csv")
+fwrite(df_reactome_low, "./EnrichmentResults/Coding Variants Results/Coding_LowVariants_Reactome.csv")
+```
+
+

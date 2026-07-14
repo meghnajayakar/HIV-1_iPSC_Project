@@ -1,0 +1,453 @@
+---
+title: "2RegulatoryVariantPrioritization"
+format: html
+---
+
+This analysis prioritizes rare non-coding variants in high- and low-infectivity samples by integrating variant annotation, cCRE overlap, and differential gene expression results followed by a scoring framework that considers impact, biotype, consequence and regulatory element overlap. Genes filtered using the scoring framework are subjected to GO, KEGG and Reactome enrichment analyses to identify biological pathways associated with each infectivity class. This provides functional pathway context for genes containing prioritized variants and enables downstream identification of variants occurring in biologically relevant pathways.
+
+### loading libraries required
+```{r}
+library(dplyr)
+library(tidyverse)
+library(data.table)
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(ReactomePA)
+```
+
+### read high-infectivity and low-infectivity regulatory samples CSVs (converted from VCF)
+```{r}
+high_samples_df <- read.csv("./high_rare_regulatory.csv", sep = ",", header = TRUE)
+high_samples_df
+```
+
+```{r}
+low_samples_df <- read.csv("./low_rare_regulatory.csv", sep = ",", header = TRUE)
+low_samples_df
+```
+
+### remove duplicate variant annotations generated during VCF conversion
+```{r}
+high_samples <- distinct(high_samples_df)
+low_samples <- distinct(low_samples_df)
+```
+
+```{r}
+high_samples
+```
+
+```{r}
+low_samples
+```
+
+### read cCRE BED annotation for overlap with candidate regulatory elements 
+note: ensure both the cCRE BED from ENCODE are aligned to the hg38/GRCh38 build of the human reference genome assembly
+```{r}
+ccre_bed <- read_tsv("./GRCh38-cCREs.bed", col_names = c("chrom", "start", "end", "CCRE_ID", "CCRE_ID_ENCODE", "cCRE_Type"))
+ccre_bed
+```
+
+### rename dataframes to be consistent (these were cross-checked with the dataframes to ensure the correct column was renamed in both high_samples and low_samples)
+```{r}
+high_samples <- high_samples %>% rename_at('MOTIF_POS', ~'CCRE_ID')
+low_samples <- low_samples %>% rename_at('MOTIF_POS', ~'CCRE_ID')
+```
+
+### left join high- and low-infectivity samples with cCRE BED annotations, to provide functional context of regulatory element overlap in our non-coding variant set
+```{r}
+high_ccre <- high_samples %>%
+  left_join(ccre_bed %>% select(CCRE_ID, cCRE_Type, CCRE_ID_ENCODE), by = "CCRE_ID")
+
+high_ccre
+```
+
+```{r}
+low_ccre <- low_samples %>%
+  left_join(ccre_bed %>% select(CCRE_ID, cCRE_Type, CCRE_ID_ENCODE), by = "CCRE_ID")
+
+low_ccre
+```
+
+### define regulatory biotypes for filtering 
+```{r}
+regulatory_biotypes <- c("promoter", "enhancer", "CTCF_binding_site", "lncRNA", "miRNA", "open_chromatin_region")
+```
+
+### filter by biotype (promoter, enhancer, CTCF-bound, lncRNA, miRNA or open chromatin region), impact (high or moderate), consequence (regulatory region variant, TFBS ablation, 5' or 3' UTR variant, upstream gene variant or non-coding transcript exon variant) for each infectivity class. additionally filter for rare regulatory variants with a gnomAD genome allele frequency <1% or NA
+
+a slightly relaxed threshold for gnomADg < 1% (compared to the coding threshold of gnomADe < 0.1%) is applied to regulatory variants to capture functionally important variants
+```{r}
+filtered_variants_high <- high_ccre %>%
+  filter(
+    # keep high-impact hits
+    (IMPACT %in% c("MODERATE", "HIGH")) | 
+    
+    # keep confirmed regulatory elements (regardless of 'MODIFIER' status)
+    ((BIOTYPE %in% regulatory_biotypes) & grepl("PLS|pELS|dELS|CTCF", cCRE_Type)) |
+    
+    # keep specific regulatory consequences
+    (Consequence %in% c(
+      "regulatory_region_variant", "TFBS_ablation", 
+      "5_prime_UTR_variant", "3_prime_UTR_variant", 
+      "upstream_gene_variant", "non_coding_transcript_exon_variant"
+    )),
+    
+    # population frequency (NA for novel variants)
+    (is.na(gnomADg_AF) | gnomADg_AF < 0.01)
+  )
+
+filtered_variants_high
+```
+
+```{r}
+filtered_variants_low <- low_ccre %>%
+  filter(
+    # keep high-impact hits
+    (IMPACT %in% c("MODERATE", "HIGH")) | 
+    
+    # keep confirmed regulatory elements (regardless of 'MODIFIER' status)
+    ((BIOTYPE %in% regulatory_biotypes) & grepl("PLS|pELS|dELS|CTCF", cCRE_Type)) |
+    
+    # keep specific regulatory consequences
+    (Consequence %in% c(
+      "regulatory_region_variant", "TFBS_ablation", 
+      "5_prime_UTR_variant", "3_prime_UTR_variant", 
+      "upstream_gene_variant", "non_coding_transcript_exon_variant"
+    )),
+    
+    # population frequency (NA for novel variants)
+    (is.na(gnomADg_AF) | gnomADg_AF < 0.01)
+  )
+
+filtered_variants_low
+```
+
+### read DESeq2 results across all cell lines, with a design formula considering screen_nb and replication classification
+```{r}
+de_genes <- read.csv("./DifferentialExpressionResults.csv", sep = ",", header = TRUE)
+
+de_genes
+```
+
+### rename columns to reflect gene symbol as adding back gene symbol to DESeq2 matrices make the SYMBOL column the index
+```{r}
+colnames(de_genes)
+
+#colnames(de_genes) <- c("SYMBOL", "baseMean", "log2FoldChange", "lfcSE", "pvalue", "padj")
+
+# confirm -> if the DESeq2 result renames column at index 1 with X for the gene names/symbol variable, this will specifically correct X to SYMBOL for downstream analysis
+if("X" %in% colnames(de_genes)) {
+  de_genes <- de_genes %>% rename(SYMBOL = X)
+}
+```
+
+### filter for significant genes, padj < 0.05
+```{r}
+sig_genes <- de_genes %>% 
+  filter(padj < 0.05)
+```
+
+### distinct genes found 
+```{r}
+high_filtered_unique_genes <- unique(filtered_variants_high$SYMBOL)
+low_filtered_unique_genes <- unique(filtered_variants_low$SYMBOL)
+```
+
+### retrieve differential expression results for genes retained after variant filtering 
+```{r}
+high_genes_expressed <- sig_genes %>%
+  filter(SYMBOL %in% high_filtered_unique_genes)
+
+high_genes_expressed
+```
+
+```{r}
+low_genes_expressed <- sig_genes %>%
+  filter(SYMBOL %in% low_filtered_unique_genes)
+
+low_genes_expressed
+```
+
+### left join transcriptionally significant unique genes with genomic data using the gene symbol for both infectivity classes, this provides expression context to variant data 
+```{r}
+high_expressed_df <- left_join(high_genes_expressed, filtered_variants_high, by = "SYMBOL")
+high_expressed_df
+```
+
+```{r}
+low_expressed_df <- left_join(low_genes_expressed, filtered_variants_low, by = "SYMBOL")
+low_expressed_df
+```
+
+### prioritizing with the scoring framework 
+
+consequence score reflects predicted functional disruption severity: 
+- frameshift/splice sites are prioritized highest (10) as they typically cause complete loss of function (LoF). 
+- missense/inframe changes are comparatively lower (8) as they disrupt protein structure
+- UTR (5) and upstream (4) variants may alter expression/translation efficiency
+
+regulatory score is based on candidate cis-regulatory element (cCRE) classification from ENCODE (version 3)
+- promoter-like signatures (PLS: 5) and proximal enhancer-like signatures (pELS: 4) are weighted higher due to their proximity-based impact on transcriptional initiation
+- distal enhancer-like signatures (dELS: 3) and structural chromatin boundaries (CTCF: 2) are weighted lower comparatively 
+```{r}
+prioritized_variants_high <- high_expressed_df %>%
+  # 1. biotype Filter: prioritize functional transcripts
+  mutate(biotype_score = case_when(
+    BIOTYPE == "protein_coding" ~ 3,
+    BIOTYPE == "lncRNA" ~ 2,
+    TRUE ~ 1
+  )) %>%
+  
+  # 2. consequence score reflecting predicted functional disruption severity
+  mutate(cons_score = case_when(
+    grepl("frameshift|splice_donor|splice_acceptor", Consequence) ~ 10,
+    grepl("missense|inframe", Consequence) ~ 8,
+    grepl("5_prime_UTR|3_prime_UTR", Consequence) ~ 5,
+    grepl("upstream", Consequence) ~ 4,
+    TRUE ~ 1
+  )) %>%
+  
+  # 3. regulatory score to see if it lies in a cCRE element
+  mutate(reg_score = case_when(
+    grepl("PLS", cCRE_Type) ~ 5,
+    grepl("pELS", cCRE_Type) ~ 4,
+    grepl("dELS", cCRE_Type) ~ 3,
+    grepl("CTCF-bound", cCRE_Type) ~ 2,
+    TRUE ~ 0
+  )) %>%
+  
+  # 4. final ranking
+  group_by(SYMBOL) %>%
+  # sort by: biotype first, then consequence severity, then regulatory element, then distance
+  arrange(desc(biotype_score), desc(cons_score), desc(reg_score), abs(DISTANCE)) %>%
+  # collapsing to the single highest-scoring variant per gene (slice(1)), prevents genes associated with multiple variants from artificially inflating downstream enrichment analysis
+  slice(1) %>%
+  ungroup()
+
+prioritized_variants_high
+```
+
+```{r}
+prioritized_variants_low <- low_expressed_df %>%
+  # 1. biotype Filter: prioritize functional transcripts
+  mutate(biotype_score = case_when(
+    BIOTYPE == "protein_coding" ~ 3,
+    BIOTYPE == "lncRNA" ~ 2,
+    TRUE ~ 1
+  )) %>%
+  
+  # 2. consequence score reflecting predicted functional disruption severity
+  mutate(cons_score = case_when(
+    grepl("frameshift|splice_donor|splice_acceptor", Consequence) ~ 10,
+    grepl("missense|inframe", Consequence) ~ 8,
+    grepl("5_prime_UTR|3_prime_UTR", Consequence) ~ 5,
+    grepl("upstream", Consequence) ~ 4,
+    TRUE ~ 1
+  )) %>%
+  
+  # 3. 3. regulatory score to see if it lies in a cCRE element
+  mutate(reg_score = case_when(
+    grepl("PLS", cCRE_Type) ~ 5,
+    grepl("pELS", cCRE_Type) ~ 4,
+    grepl("dELS", cCRE_Type) ~ 3,
+    grepl("CTCF-bound", cCRE_Type) ~ 2,
+    TRUE ~ 0
+  )) %>%
+  
+  # 4. final ranking
+  group_by(SYMBOL) %>%
+  # sort by: biotype first, then consequence severity, then regulatory element, then distance
+  arrange(desc(biotype_score), desc(cons_score), desc(reg_score), abs(DISTANCE)) %>%
+  slice(1) %>%
+  ungroup()
+
+prioritized_variants_low
+```
+
+### save the results of scoring prioritization
+```{r}
+fwrite(prioritized_variants_high, "./PrioritizedVariants_Regulatory_High.csv")
+fwrite(prioritized_variants_low, "./PrioritizedVariants_Regulatory_Low.csv")
+```
+
+# enrichment analysis
+
+### define the enrichment background as all genes tested in the differential expression analysis
+```{r}
+universe_genes <- unique(de_genes$SYMBOL)
+length(universe_genes)
+```
+
+### unique genes for bittr conversion 
+```{r}
+high_genes_prioritized <- unique(prioritized_variants_high$SYMBOL)
+length(high_genes_prioritized)
+```
+
+```{r}
+low_genes_prioritized <- unique(prioritized_variants_low$SYMBOL)
+length(low_genes_prioritized)
+```
+
+
+### define ENTREZ IDs for unique infectivity genes and universe set using gene symbol 
+```{r}
+universe_entrez <- bitr(universe_genes, 
+                    fromType = "SYMBOL", 
+                    toType   = "ENTREZID", 
+                    OrgDb    = org.Hs.eg.db)
+```
+
+```{r}
+high_entrez_prioritized <- bitr(high_genes_prioritized, 
+                    fromType = "SYMBOL", 
+                    toType   = "ENTREZID", 
+                    OrgDb    = org.Hs.eg.db)
+
+low_entrez_prioritized <- bitr(low_genes_prioritized, 
+                   fromType = "SYMBOL", 
+                   toType   = "ENTREZID", 
+                   OrgDb    = org.Hs.eg.db)
+```
+
+### gene ontology enrichment with all ontologies - biological processes, cellular components and molecular function, with significant pathways and FDR
+```{r}
+go_high_prioritized <- enrichGO(gene = high_entrez_prioritized$ENTREZID,
+                    universe      = universe_entrez$ENTREZID,
+                    OrgDb         = org.Hs.eg.db,
+                    keyType       = 'ENTREZID',
+                    ont           = "ALL", # all 
+                    pAdjustMethod = "BH",
+                    pvalueCutoff  = 0.05,
+                    qvalueCutoff  = 0.05,
+                    readable = TRUE)
+
+go_high_prioritized
+```
+
+```{r}
+dotplot(go_high_prioritized, showCategory = 10)
+```
+```{r}
+go_low_prioritized <- enrichGO(gene = low_entrez_prioritized$ENTREZID,
+                    universe      = universe_entrez$ENTREZID,
+                    OrgDb         = org.Hs.eg.db,
+                    keyType       = 'ENTREZID',
+                    ont           = "ALL", # all 
+                    pAdjustMethod = "BH",
+                    pvalueCutoff  = 0.05,
+                    qvalueCutoff  = 0.05,
+                    readable = TRUE)
+
+go_low_prioritized
+```
+
+```{r}
+dotplot(go_low_prioritized, showCategory = 10)
+```
+
+```{r}
+df_go_high <- as.data.frame(go_high_prioritized)
+df_go_high
+
+df_go_low <- as.data.frame(go_low_prioritized)
+df_go_low
+```
+
+### KEGG pathway enrichment analysis for the opposing phenotype classes 
+```{r}
+ekegg_high <- enrichKEGG(
+  gene          = high_entrez_prioritized$ENTREZID,
+  universe      = universe_entrez$ENTREZID,
+  organism      = 'hsa',              # 'hsa' is the code for Homo sapiens
+  keyType       = 'kegg',             # Default is 'kegg' (Entrez IDs)
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# Optional: Convert IDs back to readable Gene Symbols
+ekegg_high <- setReadable(ekegg_high, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+ekegg_high
+```
+
+```{r}
+df_kegg_high <- as.data.frame(ekegg_high)
+df_kegg_high
+```
+
+
+```{r}
+ekegg_low <- enrichKEGG(
+  gene          = low_entrez_prioritized$ENTREZID,
+  universe      = universe_entrez$ENTREZID,
+  organism      = 'hsa',              # 'hsa' is the code for Homo sapiens
+  keyType       = 'kegg',             # Default is 'kegg' (Entrez IDs)
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# Optional: Convert IDs back to readable Gene Symbols
+ekegg_low <- setReadable(ekegg_low, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+ekegg_low
+```
+
+```{r}
+dotplot(ekegg_low)
+```
+
+```{r}
+df_kegg_low <- as.data.frame(ekegg_low)
+df_kegg_low
+```
+
+### Reactome pathway analysis for opposing infectivity phenotypes 
+```{r}
+reactome_res_high <- enrichPathway(gene = high_entrez_prioritized$ENTREZID, 
+                              organism = "human", 
+                              pvalueCutoff = 0.05, 
+                              readable = TRUE)
+reactome_res_high
+```
+
+```{r}
+dotplot(reactome_res_high)
+```
+
+```{r}
+df_reactome_high <- as.data.frame(reactome_res_high)
+df_reactome_high
+```
+
+
+```{r}
+reactome_res_low <- enrichPathway(gene = low_entrez_prioritized$ENTREZID, 
+                              organism = "human", 
+                              pvalueCutoff = 0.05, 
+                              readable = TRUE)
+reactome_res_low
+```
+
+```{r}
+dotplot(reactome_res_low)
+```
+
+```{r}
+df_reactome_low <- as.data.frame(reactome_res_low)
+df_reactome_low
+```
+
+#### save enrichment dataframes to CSV files for downstream analysis 
+```{r}
+fwrite(df_go_high, "./EnrichmentResults/Regulatory Variants Results/HighVariants_Prioritized_GO_Enrichment.csv")
+fwrite(df_go_low, "./EnrichmentResults/Regulatory Variants Results/LowVariants_Prioritized_GO_Enrichment.csv")
+fwrite(df_kegg_high, "./EnrichmentResults/Regulatory Variants Results/HighVariants_Prioritized_KEGG.csv")
+fwrite(df_kegg_low, "./EnrichmentResults/Regulatory Variants Results/LowVariants_Prioritized_KEGG.csv")
+fwrite(df_reactome_high, "./EnrichmentResults/Regulatory Variants Results/HighVariants_Prioritized_Reactome.csv")
+fwrite(df_reactome_low, "./EnrichmentResults/Regulatory Variants Results/LowVariants_Prioritized_Reactome.csv")
+```

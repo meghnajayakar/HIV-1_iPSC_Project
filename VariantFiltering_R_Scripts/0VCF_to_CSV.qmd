@@ -1,0 +1,282 @@
+---
+title: "0VCF_to_CSV"
+format: html
+---
+
+```{r}
+library(vcfR)
+library(dplyr)
+library(tidyr)
+library(data.table)
+```
+
+### read VCF files for regulatory variants 
+```{r}
+high_samples_vcf_reg <- read.vcfR("./high_rare_regulatory.vcf.gz")
+high_samples_vcf_reg
+
+low_samples_vcf_reg <- read.vcfR("./low_rare_regulatory.vcf.gz")
+low_samples_vcf_reg
+```
+
+```{r}
+colnames(high_samples_vcf_reg@gt)
+```
+
+```{r}
+colnames(low_samples_vcf_reg@gt)
+```
+
+
+#### for regulatory variants 
+```{r}
+process_vcf_csq_regulatory <- function(vcf_object, output_path = NULL) {
+  # convert fixed effects to data frame
+  vcf_fix <- as.data.frame(getFIX(vcf_object))
+  
+  # extract the raw CSQ strings from the INFO column
+  vcf_fix$CSQ <- extract.info(vcf_object, element = "CSQ")
+  
+  # define the column names based on the VEP header
+  csq_cols <- c(
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", 
+    "Feature_type", "Feature", "BIOTYPE", "EXON", "INTRON", 
+    "HGVSc", "HGVSp", "cDNA_position", "CDS_position", 
+    "Protein_position", "Amino_acids", "Codons", "Existing_variation", 
+    "DISTANCE", "STRAND", "FLAGS", "SYMBOL_SOURCE", "HGNC_ID", 
+    "CANONICAL", "SOURCE", "HGVS_OFFSET", "gnomADe_AF", "gnomADe_AFR_AF", 
+    "gnomADe_AMR_AF", "gnomADe_ASJ_AF", "gnomADe_EAS_AF", "gnomADe_FIN_AF", 
+    "gnomADe_MID_AF", "gnomADe_NFE_AF", "gnomADe_REMAINING_AF", 
+    "gnomADe_SAS_AF", "gnomADg_AF", "gnomADg_AFR_AF", "gnomADg_AMI_AF", 
+    "gnomADg_AMR_AF", "gnomADg_ASJ_AF", "gnomADg_EAS_AF", "gnomADg_FIN_AF", 
+    "gnomADg_MID_AF", "gnomADg_NFE_AF", "gnomADg_REMAINING_AF", 
+    "gnomADg_SAS_AF", "CLIN_SIG", "SOMATIC", "PHENO", "MOTIF_NAME", 
+    "MOTIF_POS", "HIGH_INF_POS", "MOTIF_SCORE_CHANGE", 
+    "TRANSCRIPTION_FACTORS", "cCRE", "cCRE_4", "cCRE_6"
+  )
+  
+  # split CSQ and select targeted columns
+  # note: added 'fill = "right"' just in case some rows have trailing missing values
+  vcf_final <- vcf_fix %>%
+    separate(CSQ, into = csq_cols, sep = "\\|", fill = "right") %>%
+    select(
+      CHROM, POS, REF, ALT, SYMBOL, Gene, Consequence, IMPACT, 
+      DISTANCE, CANONICAL, cCRE, cCRE_6, MOTIF_NAME, MOTIF_POS, 
+      MOTIF_SCORE_CHANGE, TRANSCRIPTION_FACTORS, gnomADe_AF, gnomADg_AF, 
+      Feature_type, BIOTYPE
+    )
+  
+  # 5. save to CSV if an output path is provided
+  if (!is.null(output_path)) {
+    fwrite(vcf_final, output_path)
+    message(paste("Saved to", output_path))
+  }
+  
+  # return the data frame 
+  return(vcf_final)
+}
+```
+
+```{r}
+vcf_final_high_reg <- process_vcf_csq_regulatory(high_samples_vcf_reg, "./high_rare_regulatory.csv")
+```
+
+
+```{r}
+vcf_final_low_reg <- process_vcf_csq_regulatory(low_samples_vcf_reg, "./low_rare_regulatory.csv")
+```
+
+#### expanded transcript-level records 
+```{r}
+process_vcf_csq_regulatory_transcript_level <- function(vcf_object, output_path = NULL) {
+  # convert fixed effects to data frame
+  vcf_fix <- as.data.frame(getFIX(vcf_object))
+  
+  # extract the raw CSQ strings from the INFO column
+  vcf_fix$CSQ <- as.character(extract.info(vcf_object, element = "CSQ"))
+  
+  # define the column names based on the VEP header
+  csq_cols <- c(
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", 
+    "Feature_type", "Feature", "BIOTYPE", "EXON", "INTRON", 
+    "HGVSc", "HGVSp", "cDNA_position", "CDS_position", 
+    "Protein_position", "Amino_acids", "Codons", "Existing_variation", 
+    "DISTANCE", "STRAND", "FLAGS", "SYMBOL_SOURCE", "HGNC_ID", 
+    "CANONICAL", "SOURCE", "HGVS_OFFSET", "gnomADe_AF", "gnomADe_AFR_AF", 
+    "gnomADe_AMR_AF", "gnomADe_ASJ_AF", "gnomADe_EAS_AF", "gnomADe_FIN_AF", 
+    "gnomADe_MID_AF", "gnomADe_NFE_AF", "gnomADe_REMAINING_AF", 
+    "gnomADe_SAS_AF", "gnomADg_AF", "gnomADg_AFR_AF", "gnomADg_AMI_AF", 
+    "gnomADg_AMR_AF", "gnomADg_ASJ_AF", "gnomADg_EAS_AF", "gnomADg_FIN_AF", 
+    "gnomADg_MID_AF", "gnomADg_NFE_AF", "gnomADg_REMAINING_AF", 
+    "gnomADg_SAS_AF", "CLIN_SIG", "SOMATIC", "PHENO", "MOTIF_NAME", 
+    "MOTIF_POS", "HIGH_INF_POS", "MOTIF_SCORE_CHANGE", 
+    "TRANSCRIPTION_FACTORS", "cCRE", "cCRE_4", "cCRE_6"
+  )
+  
+  # process, split, and clean
+  vcf_final <- vcf_fix %>%
+    separate_rows(CSQ, sep = ",") %>%                           # expand to transcript-level rows
+    separate(CSQ, into = csq_cols, sep = "\\|", 
+             extra = "drop", fill = "right") %>%                # split fields safely
+    mutate(across(all_of(csq_cols), ~na_if(.x, ""))) %>%         # convert empty strings to NA
+    select(
+      CHROM, POS, REF, ALT, SYMBOL, Gene, Consequence, IMPACT, 
+      DISTANCE, CANONICAL, cCRE, cCRE_6, MOTIF_NAME, MOTIF_POS, 
+      MOTIF_SCORE_CHANGE, TRANSCRIPTION_FACTORS, gnomADe_AF, gnomADg_AF, 
+      Feature_type, BIOTYPE
+    ) %>%
+    mutate(across(contains("_AF"), as.numeric))                 # convert AF to numbers
+  
+  # 5. save to CSV if an output path is provided
+  if (!is.null(output_path)) {
+    fwrite(vcf_final, output_path)
+    message(paste("Saved to", output_path))
+  }
+  
+  # return the data frame 
+  return(vcf_final)
+}
+```
+
+```{r}
+vcf_final_high_reg_expanded <- process_vcf_csq_regulatory_transcript_level(high_samples_vcf_reg, "./high_rare_regulatory_expanded.csv")
+```
+
+
+```{r}
+vcf_final_low_reg_expanded <- process_vcf_csq_regulatory_transcript_level(low_samples_vcf_reg, "./low_rare_regulatory_expanded.csv")
+```
+
+### read VCF files for coding variants 
+```{r}
+high_samples_vcf_code <- read.vcfR("./high_rare_coding_biotype.vcf.gz")
+high_samples_vcf_code
+
+low_samples_vcf_code <- read.vcfR("./low_rare_coding_biotype.vcf.gz")
+low_samples_vcf_code
+```
+
+```{r}
+colnames(high_samples_vcf_code@gt)
+```
+
+```{r}
+colnames(low_samples_vcf_code@gt)
+```
+
+#### for coding variants 
+```{r}
+process_vcf_csq_coding <- function(vcf_object, output_path = NULL) {
+  # convert fixed effects to data frame
+  vcf_fix <- as.data.frame(getFIX(vcf_object))
+  
+  # extract the raw CSQ strings from the INFO column
+  vcf_fix$CSQ <- extract.info(vcf_object, element = "CSQ")
+  
+  # define the column names based on the VEP header
+  csq_colnames <- c(
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature_type", 
+    "Feature", "BIOTYPE", "EXON", "INTRON", "HGVSc", "HGVSp", 
+    "cDNA_position", "CDS_position", "Protein_position", "Amino_acids", 
+    "Codons", "Existing_variation", "DISTANCE", "STRAND", "FLAGS", 
+    "VARIANT_CLASS", "SYMBOL_SOURCE", "HGNC_ID", "CANONICAL", "ENSP", 
+    "SOURCE", "SIFT", "PolyPhen", "HGVS_OFFSET", "gnomADe_AF", 
+    "gnomADe_AFR_AF", "gnomADe_AMR_AF", "gnomADe_ASJ_AF", "gnomADe_EAS_AF", 
+    "gnomADe_FIN_AF", "gnomADe_MID_AF", "gnomADe_NFE_AF", "gnomADe_REMAINING_AF", 
+    "gnomADe_SAS_AF", "gnomADg_AF", "gnomADg_AFR_AF", "gnomADg_AMI_AF", 
+    "gnomADg_AMR_AF", "gnomADg_ASJ_AF", "gnomADg_EAS_AF", "gnomADg_FIN_AF", 
+    "gnomADg_MID_AF", "gnomADg_NFE_AF", "gnomADg_REMAINING_AF", "gnomADg_SAS_AF", 
+    "CLIN_SIG", "SOMATIC", "PHENO", "MOTIF_NAME", "MOTIF_POS", "HIGH_INF_POS", 
+    "MOTIF_SCORE_CHANGE", "TRANSCRIPTION_FACTORS", "cCRE", "cCRE_4", "cCRE_6"
+  )
+  
+  # split CSQ and select targeted columns
+  # note: added 'fill = "right"' just in case some rows have trailing missing values
+  vcf_final <- vcf_fix %>%
+  separate(CSQ, into = csq_colnames, sep = "\\|", fill = "right") %>% 
+  select(
+    CHROM, POS, REF, ALT, SYMBOL, Gene, Consequence, IMPACT, 
+    DISTANCE, CANONICAL, cCRE, MOTIF_NAME, MOTIF_POS, 
+    MOTIF_SCORE_CHANGE, TRANSCRIPTION_FACTORS, gnomADe_AF, gnomADg_AF, Feature_type, 
+    BIOTYPE, EXON, HGVSp, SIFT, PolyPhen
+  )
+  
+  # 5. save to CSV if an output path is provided
+  if (!is.null(output_path)) {
+    fwrite(vcf_final, output_path)
+    message(paste("Saved to", output_path))
+  }
+  
+  # return the data frame 
+  return(vcf_final)
+}
+```
+
+```{r}
+vcf_final_high_coding <- process_vcf_csq_coding(high_samples_vcf_code, "./high_rare_coding_biotype.csv")
+```
+
+```{r}
+vcf_final_low_coding <- process_vcf_csq_coding(low_samples_vcf_code, "./low_rare_coding_biotype.csv")
+```
+
+#### expanded transcript-level records 
+```{r}
+process_vcf_csq_coding_transcript_level <- function(vcf_object, output_path = NULL) {
+  # convert fixed effects to data frame
+  vcf_fix <- as.data.frame(getFIX(vcf_object))
+  
+  # extract the raw CSQ strings from the INFO column
+  vcf_fix$CSQ <- extract.info(vcf_object, element = "CSQ")
+  
+  # define the column names based on the VEP header
+  csq_colnames <- c(
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature_type", 
+    "Feature", "BIOTYPE", "EXON", "INTRON", "HGVSc", "HGVSp", 
+    "cDNA_position", "CDS_position", "Protein_position", "Amino_acids", 
+    "Codons", "Existing_variation", "DISTANCE", "STRAND", "FLAGS", 
+    "VARIANT_CLASS", "SYMBOL_SOURCE", "HGNC_ID", "CANONICAL", "ENSP", 
+    "SOURCE", "SIFT", "PolyPhen", "HGVS_OFFSET", "gnomADe_AF", 
+    "gnomADe_AFR_AF", "gnomADe_AMR_AF", "gnomADe_ASJ_AF", "gnomADe_EAS_AF", 
+    "gnomADe_FIN_AF", "gnomADe_MID_AF", "gnomADe_NFE_AF", "gnomADe_REMAINING_AF", 
+    "gnomADe_SAS_AF", "gnomADg_AF", "gnomADg_AFR_AF", "gnomADg_AMI_AF", 
+    "gnomADg_AMR_AF", "gnomADg_ASJ_AF", "gnomADg_EAS_AF", "gnomADg_FIN_AF", 
+    "gnomADg_MID_AF", "gnomADg_NFE_AF", "gnomADg_REMAINING_AF", "gnomADg_SAS_AF", 
+    "CLIN_SIG", "SOMATIC", "PHENO", "MOTIF_NAME", "MOTIF_POS", "HIGH_INF_POS", 
+    "MOTIF_SCORE_CHANGE", "TRANSCRIPTION_FACTORS", "cCRE", "cCRE_4", "cCRE_6"
+  )
+  
+  # process, split, and clean
+  vcf_final <- vcf_fix %>%
+    separate_rows(CSQ, sep = ",") %>%                           # expand to transcript-level rows
+    separate(CSQ, into = csq_colnames, sep = "\\|", 
+             extra = "drop", fill = "right") %>%                # split fields safely
+    mutate(across(all_of(csq_colnames), ~na_if(.x, ""))) %>%         # convert empty strings to NA
+    select(
+      CHROM, POS, REF, ALT, SYMBOL, Gene, Consequence, IMPACT, 
+      DISTANCE, CANONICAL, cCRE, MOTIF_NAME, MOTIF_POS, 
+      MOTIF_SCORE_CHANGE, TRANSCRIPTION_FACTORS, gnomADe_AF, gnomADg_AF, Feature_type, 
+      BIOTYPE, EXON, HGVSp, SIFT, PolyPhen
+    ) %>%
+    mutate(across(contains("_AF"), as.numeric))                 # convert AF to numbers
+  
+  # 5. save to CSV if an output path is provided
+  if (!is.null(output_path)) {
+    fwrite(vcf_final, output_path)
+    message(paste("Saved to", output_path))
+  }
+  
+  # return the data frame 
+  return(vcf_final)
+}
+```
+
+
+```{r}
+vcf_final_high_coding_expanded <- process_vcf_csq_coding_transcript_level(high_samples_vcf_code, "./high_rare_coding_biotype_expanded.csv")
+```
+
+```{r}
+vcf_final_low_coding_expanded <- process_vcf_csq_coding_transcript_level(low_samples_vcf_code, "./low_rare_coding_biotype_expanded.csv")
+```
+
