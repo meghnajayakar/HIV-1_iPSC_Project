@@ -1,6 +1,19 @@
-# WGS Variant Calling
+# Using iPSC variation to define HIV-1 regulatory networks 
 
 Whole-genome sequencing (WGS) variant calling, filtering, and prioritization pipeline for the extreme cell line panel. This repository contains the HPC shell scripts, R notebooks, and Jupyter notebooks used to go from raw CRAM files to a prioritized list of coding and regulatory candidate variants.
+
+## Table of Contents
+
+- [1. Set Up the Working Directory Structure](#1-set-up-the-working-directory-structure)
+- [2. Repository Structure](#2-repository-structure)
+- [3. Pipeline Execution Order](#3-pipeline-execution-order)
+- [4. Stage 2: Running `VariantFiltering_R_Scripts`](#4-stage-2-running-variantfiltering_r_scripts)
+- [5. Stage 3: Running `VariantPrioritization_JupyterScripts`](#5-stage-3-running-variantprioritization_jupyterscripts)
+  - [Coding track](#coding-track)
+  - [Regulatory track](#regulatory-track)
+- [6. Summary of Workflow](#6-summary-of-workflow)
+- [7. Requirements](#7-requirements)
+- [Summary of Execution Order](#summary-of-execution-order)
 
 ---
 
@@ -101,50 +114,164 @@ This repository contains the analysis scripts, organized into three stages that 
 
 ## 3. Pipeline Execution Order
 
-The pipeline runs in **three stages**. Each stage depends on the output of the previous one, so scripts must be executed in order: do not skip or reorder steps within a stage.
+Scripts must be run **sequentially**, in the order listed below. Each step depends on the output of the previous one(s).
 
-### Stage 1: `HPC_WGS_Scripts/` (run first, in order)
+| Step | Script | Description |
+|------|--------|-------------|
+| 1 | `1persample_gvcfs.sh` | Generate per-sample gVCFs from CRAM files against the GRCh38 reference. Output → `gvcf/` |
+| 2 | `2combine_gvcfs.sh` | Combine per-sample gVCFs into a single cohort gVCF. |
+| 3 | `3jointgenotyping.sh` | Perform joint genotyping across all samples. Output → `vcf/` |
+| 4 | `4variant_filtration.sh` | Apply base variant filtration (e.g., hard filters / VQSR) to the joint-genotyped VCF. |
+| 5.1 | `5.1high_variants_filtering.sh` | Filter for high-confidence/high-quality variants. |
+| 5.2 | `5.2low_variants_filtering.sh` | Filter for low-confidence/low-quality variants (separate branch of filtering). |
+| 6.1 | `6.1variant_annotation_regulatory.sh` | Annotate regulatory variants using VEP (Singularity image + `vep_data`). Output → `annotations/` |
+| 6.2 | `6.2variant_annotation_coding.sh` | Annotate coding variants using VEP. Output → `annotations/` |
+| 7.1 | `7.1filter_common_variants_regulatory.sh` | Filter out common regulatory variants (e.g., by population allele frequency). |
+| 7.2 | `7.2filter_common_variants_coding.sh` | Filter out common coding variants (e.g., by population allele frequency). |
 
-Run these shell scripts sequentially on the HPC to go from per-sample gVCFs to filtered, annotated, common-variant-removed callsets for both the coding and regulatory tracks:
+Run each script from the `HPC_WGS_Scripts/` directory (or submit via your HPC scheduler, e.g., `sbatch` or `qsub`), ensuring each completes successfully before starting the next:
 
-1. `1persample_gvcfs.sh`: generate per-sample gVCFs
-2. `2combine_gvcfs.sh`: combine per-sample gVCFs
-3. `3jointgenotyping.sh`: joint genotyping across samples
-4. `4variant_filtration.sh`: apply base variant filtration
-5. `5.1high_variants_filtering.sh`: filter high-confidence variants
-   `5.2low_variants_filtering.sh`: filter low-confidence variants
-6. `6.1variant_annotation_regulatory.sh`: annotate regulatory variants
-   `6.2variant_annotation_coding.sh`: annotate coding variants
-7. `7.1filter_common_variants_regulatory.sh`: remove common variants (regulatory track)
-   `7.2filter_common_variants_coding.sh`: remove common variants (coding track)
+```bash
+cd HPC_WGS_Scripts
+./1persample_gvcfs.sh
+./2combine_gvcfs.sh
+./3jointgenotyping.sh
+./4variant_filtration.sh
+./5.1high_variants_filtering.sh
+./5.2low_variants_filtering.sh
+./6.1variant_annotation_regulatory.sh
+./6.2variant_annotation_coding.sh
+./7.1filter_common_variants_regulatory.sh
+./7.2filter_common_variants_coding.sh
+```
 
-> Steps 5, 6, and 7 branch into paired **regulatory** and **coding** sub-tracks (`.1` = regulatory, `.2` = coding). Both sub-tracks must be run, as they feed the corresponding downstream tracks in Stages 2 and 3.
+Logs for each job should be written to `scripts/logs/`.
 
-### Stage 2: `VariantFiltering_R_Scripts/` (run second, in order)
+---
 
-Using the outputs of `7.1filter_common_variants_regulatory.sh` and `7.2filter_common_variants_coding.sh` from Stage 1, run:
+## 4. Stage 2: Running `VariantFiltering_R_Scripts`
 
-1. `0VCF_to_CSV.qmd`: convert filtered VCFs to CSV format
-2. `1CodingVariantPrioritization.qmd`: initial prioritization, coding track
-3. `2RegulatoryVariantPrioritization.qmd`: initial prioritization, regulatory track
+Once steps **7.1** and **7.2** have completed, their results are fed into three Quarto (`.qmd`) notebooks, also run **in order**, for conversion and initial coding/regulatory variant prioritization:
 
-### Stage 3: `VariantPrioritization_JupyterScripts/` (run third, following the required track)
+| Order | Notebook | Description |
+|-------|----------|--------------|
+| 1 | `0VCF_to_CSV.qmd` | Converts the filtered VCF output (from 7.1/7.2) into CSV format for downstream analysis. |
+| 2 | `1CodingVariantPrioritization.qmd` | Prioritizes coding variants using the output of `7.2filter_common_variants_coding.sh`. |
+| 3 | `2RegulatoryVariantPrioritization.qmd` | Prioritizes regulatory variants using the output of `7.1filter_common_variants_regulatory.sh`. |
 
-Using the outputs of Stage 2, run the Jupyter notebooks for the relevant track (**coding** or **regulatory**) through to final prioritization:
+Render these in order (e.g., using Quarto):
 
-**Coding track:**
-1. `1.1CodingVariantPrioritization.ipynb`
-2. `3.1AlphaMissense.ipynb`
-3. `3.2AlphaGenome.ipynb`
+```bash
+cd VariantFiltering_R_Scripts
+quarto render 0VCF_to_CSV.qmd
+quarto render 1CodingVariantPrioritization.qmd
+quarto render 2RegulatoryVariantPrioritization.qmd
+```
 
-**Regulatory track:**
-1. `2.1MergeEnrichmentResults_Regulatory.ipynb`
-2. `2.2MotifDiff.ipynb`
-3. `2.3MotifDiffIntegration.ipynb`
-4. `2.4FIMO_Analysis.ipynb`
-5. `2.5RegulatoryVariantPrioritization.ipynb`
+---
 
-> Notebooks `3.1` and `3.2` (AlphaMissense / AlphaGenome) are coding-track-specific scoring steps and should be run after `1.1CodingVariantPrioritization.ipynb`. The `2.x` series notebooks are regulatory-track-specific and should be run in numerical order, culminating in `2.5RegulatoryVariantPrioritization.ipynb` for the final regulatory prioritization output.
+## 5. Stage 3: Running `VariantPrioritization_JupyterScripts`
+
+The notebooks in this folder pick up from the outputs of Stage 2 and are split into two independent tracks: **Coding** and **Regulatory**. Run only the notebooks belonging to the track relevant to your analysis (or both, if you need both sets of results). Within a track, notebooks must be run **in numerical order**.
+
+### Coding track
+
+| Order | Notebook | Description |
+|-------|----------|--------------|
+| 1 | `1.1CodingVariantPrioritization.ipynb` | Prioritizes coding variants using the output of `1CodingVariantPrioritization.qmd`. |
+| 2 | `3.1AlphaMissense.ipynb` | Scores/annotates missense variants with AlphaMissense and integrates results into the coding prioritization. |
+
+### Regulatory track
+
+| Order | Notebook | Description |
+|-------|----------|--------------|
+| 1 | `2.1MergeEnrichmentResults_Regulatory.ipynb` | Merges regulatory enrichment results from the output of `2RegulatoryVariantPrioritization.qmd`. |
+| 2 | `2.2MotifDiff.ipynb` | Computes transcription factor motif differences (MotifDiff) for regulatory variants. |
+| 3 | `2.3MotifDiffIntegration.ipynb` | Integrates MotifDiff results into the regulatory prioritization data. |
+| 4 | `2.4FIMO_Analysis.ipynb` | Runs FIMO motif scanning/analysis on the regulatory variant set. |
+| 5 | `2.5RegulatoryVariantPrioritization.ipynb` | Final regulatory variant prioritization combining enrichment, MotifDiff, and FIMO results. |
+| 6 | `3.2AlphaGenome.ipynb` | Scores/annotates regulatory variants with AlphaGenome and integrates results into the final prioritization. |
+
+Run notebooks with Jupyter, in order, for your chosen track:
+
+```bash
+cd VariantPrioritization_JupyterScripts
+
+# Coding track
+jupyter nbconvert --to notebook --execute 1.1CodingVariantPrioritization.ipynb
+jupyter nbconvert --to notebook --execute 3.1AlphaMissense.ipynb
+
+# Regulatory track
+jupyter nbconvert --to notebook --execute 2.1MergeEnrichmentResults_Regulatory.ipynb
+jupyter nbconvert --to notebook --execute 2.2MotifDiff.ipynb
+jupyter nbconvert --to notebook --execute 2.3MotifDiffIntegration.ipynb
+jupyter nbconvert --to notebook --execute 2.4FIMO_Analysis.ipynb
+jupyter nbconvert --to notebook --execute 2.5RegulatoryVariantPrioritization.ipynb
+jupyter nbconvert --to notebook --execute 3.2AlphaGenome.ipynb
+```
+
+---
+
+## 6. Summary of Workflow
+
+```
+CRAM_selected/ ──▶ 1persample_gvcfs.sh ──▶ gvcf/
+                                              │
+                                              ▼
+                                   2combine_gvcfs.sh
+                                              │
+                                              ▼
+                                 3jointgenotyping.sh ──▶ vcf/
+                                              │
+                                              ▼
+                                4variant_filtration.sh
+                                     │              │
+                                     ▼              ▼
+                    5.1high_variants_filtering.sh  5.2low_variants_filtering.sh
+                                     │              │
+                                     ▼              ▼
+                6.1variant_annotation_regulatory.sh  6.2variant_annotation_coding.sh ──▶ annotations/
+                                     │              │
+                                     ▼              ▼
+        7.1filter_common_variants_regulatory.sh  7.2filter_common_variants_coding.sh
+                                     │              │            [HPC_WGS_Scripts]
+                                     ▼              ▼
+                        0VCF_to_CSV.qmd (both branches)
+                                     │
+                        ┌────────────┴────────────┐
+                        ▼                          ▼
+        2RegulatoryVariantPrioritization.qmd   1CodingVariantPrioritization.qmd
+                        │                          │            [VariantFiltering_R_Scripts]
+                        ▼                          ▼
+        2.1MergeEnrichmentResults_Regulatory.ipynb   1.1CodingVariantPrioritization.ipynb
+                        │                          │
+                        ▼                          ▼
+                2.2MotifDiff.ipynb                3.1AlphaMissense.ipynb
+                        │
+                        ▼
+                2.3MotifDiffIntegration.ipynb
+                        │                          [VariantPrioritization_JupyterScripts]
+                        ▼
+                2.4FIMO_Analysis.ipynb
+                        │
+                        ▼
+                2.5RegulatoryVariantPrioritization.ipynb
+                        │
+                        ▼
+                3.2AlphaGenome.ipynb
+```
+
+---
+
+## 7. Requirements
+
+- HPC cluster with a job scheduler (e.g., SLURM/PBS)
+- Singularity/Apptainer (for VEP annotation image in `software/`)
+- GATK (or equivalent variant calling toolkit) for gVCF generation, combination, and joint genotyping
+- VEP cache/data (`vep_data`) matching the GRCh38 reference build
+- [Quarto](https://quarto.org/) for rendering `.qmd` notebooks
+- R and/or Python environment with packages required by the `.qmd` notebooks
+- Jupyter (JupyterLab/Notebook) with Python environment required by the `.ipynb` notebooks (e.g., AlphaMissense, AlphaGenome, FIMO/MEME suite dependencies)
 
 ---
 
